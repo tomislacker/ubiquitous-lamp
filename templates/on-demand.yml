@@ -1,0 +1,225 @@
+---
+Parameters:
+  IAMPath:
+    Type: String
+    Default: /
+
+  InstanceType:
+    Type: String
+    Default: g4dn.xlarge
+    Description: |
+      EC2 Instance Type to use to bootstrap or patch your instance
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for RDP access
+    ConstraintDescription: can contain only alphanumeric characters, spaces, dashes, & underscores
+
+  RemoteIPAddress:
+    Type: String
+    Description: |
+      IPv4 address to allow connectivity from
+
+  SubnetId:
+    Type: String
+    Default: ''
+
+  VpcCreationAZ:
+    Type: String
+    AllowedPattern: '^(|[a-e])$'
+    Description: |
+      If a VPC is being created specifically work this, what availability zone
+      letter should be used
+
+  VpcCreationCidr:
+    Type: String
+    Default: '10.13.37.0/24'
+
+  VpcId:
+    Type: String
+    Default: ''
+
+Conditions:
+  CreateVpc: !Or
+    - !Not [Condition: HasSubnetId]
+    - !Not [Condition: HasVpcId]
+  HasSubnetId: !Not [!Equals [!Ref SubnetId, '']]
+  HasVpcId: !Not [!Equals [!Ref VpcId, '']]
+  VpcCreationIsAzA: !Equals [!Ref VpcCreationAZ, 'a']
+  VpcCreationIsAzB: !Equals [!Ref VpcCreationAZ, 'b']
+  VpcCreationIsAzC: !Equals [!Ref VpcCreationAZ, 'c']
+  VpcCreationIsAzD: !Equals [!Ref VpcCreationAZ, 'd']
+  VpcCreationIsAzE: !Equals [!Ref VpcCreationAZ, 'e']
+
+Mappings:
+  AMI:
+    # v445.87 (Arp 30, 2020)
+    af-south-1:
+      image: ami-0945f622c26c8c8c2
+    ap-east-1:
+      image: ami-0cc2772a362f18633
+    ap-northeast-1:
+      image: ami-0f8a3a1d1446b963d
+    ap-northeast-2:
+      image: ami-093179249cbbb7d04
+    ap-south-1:
+      image: ami-060c892080cf4e369
+    ap-southeast-1:
+      image: ami-0186e18f594075934
+    ap-southeast-2:
+      image: ami-07b464682a7ef0108
+    ca-central-1:
+      image: ami-04308b8ea71bf4d67
+    eu-central-1:
+      image: ami-0d1e1c5d07d06bcf3
+    eu-north-1:
+      image: ami-08315628a321d0f62
+    eu-south-1:
+      image: ami-088ab3a6d804779b5
+    eu-west-1:
+      image: ami-0bdd2f8c63e3cd8c1
+    eu-west-2:
+      image: ami-097dc276efcc881f6
+    eu-west-3:
+      image: ami-0d541568461085683
+    me-south-1:
+      image: ami-06b7ea0d06b55e9cc
+    sa-east-1:
+      image: ami-0d33cf489f9320e60
+    us-east-1:
+      image: ami-0fd3ed1f806024eca
+    us-east-2:
+      image: ami-0147100c2f00ccbe9
+    us-west-1:
+      image: ami-0dd72aaea6cfc25f1
+    us-west-2:
+      image: ami-04308b8ea71bf4d67
+
+Resources:
+  VPC:
+    Condition: CreateVpc
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        EnableVpcEndpointDynamoDb: 'false'
+        EnableVpcEndpointS3: 'false'
+        SubnetProdPublicACidrBlock: !If [VpcCreationIsAzA, !Ref VpcCreationCidr, !Ref 'AWS::NoValue']
+        SubnetProdPublicBCidrBlock: !If [VpcCreationIsAzB, !Ref VpcCreationCidr, !Ref 'AWS::NoValue']
+        SubnetProdPublicCCidrBlock: !If [VpcCreationIsAzC, !Ref VpcCreationCidr, !Ref 'AWS::NoValue']
+        SubnetProdPublicDCidrBlock: !If [VpcCreationIsAzD, !Ref VpcCreationCidr, !Ref 'AWS::NoValue']
+        SubnetProdPublicECidrBlock: !If [VpcCreationIsAzE, !Ref VpcCreationCidr, !Ref 'AWS::NoValue']
+        VpcCidrBlock: !Ref VpcCreationCidr
+        VpcName: !Ref AWS::StackName
+      TemplateURL: !Sub https://digops-stacks-${AWS::Region}.s3.amazonaws.com/version/22.11.0/vpc.template
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      Path: !Ref IAMPath
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: !Ref IAMPath
+      Roles:
+        - !Ref InstanceRole
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub Security group for ${AWS::StackName} instance
+      SecurityGroupIngress:
+        # RDP
+        - CidrIp: !Sub ${RemoteIPAddress}/32
+          IpProtocol: tcp
+          FromPort: 3390
+          ToPort: 3389
+        # Parsec
+        - CidrIp: !Sub ${RemoteIPAddress}/32
+          IpProtocol: udp
+          FromPort: 8000
+          ToPort: 8200
+        # Parsec
+        - CidrIp: !Sub ${RemoteIPAddress}/32
+          IpProtocol: udp
+          FromPort: 9000
+          ToPort: 9200
+      VpcId: !Ref VpcId
+
+  Instance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT20M
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 100
+            DeleteOnTermination: true
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !FindInMap [AMI, !Ref 'AWS::Region', 'image']
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      SubnetId: !If
+        - CreateVpc
+        - !If
+          - VpcCreationIsAzA
+          - !GetAtt VPC.Outputs.SubnetProdPublicAId
+          - !If
+            - VpcCreationIsAzB
+            - !GetAtt VPC.Outputs.SubnetProdPublicBId
+            - !If
+              - VpcCreationIsAzC
+              - !GetAtt VPC.Outputs.SubnetProdPublicCId
+              - !If
+                - VpcCreationIsAzD
+                - !GetAtt VPC.Outputs.SubnetProdPublicDId
+                - !If
+                  - VpcCreationIsAzE
+                  - !GetAtt VPC.Outputs.SubnetProdPublicEId
+                  - 'UNKNOWN SITUATION' # This should not be able to happen
+        - !Ref SubnetId
+
+Outputs:
+  SubnetId:
+    Description: Subnet Id in-use
+    Value: !If
+      - CreateVpc
+      - !If
+        - VpcCreationIsAzA
+        - !GetAtt VPC.Outputs.SubnetProdPublicAId
+        - !If
+          - VpcCreationIsAzB
+          - !GetAtt VPC.Outputs.SubnetProdPublicBId
+          - !If
+            - VpcCreationIsAzC
+            - !GetAtt VPC.Outputs.SubnetProdPublicCId
+            - !If
+              - VpcCreationIsAzD
+              - !GetAtt VPC.Outputs.SubnetProdPublicDId
+              - !If
+                - VpcCreationIsAzE
+                - !GetAtt VPC.Outputs.SubnetProdPublicEId
+                - 'UNKNOWN SITUATION' # This should not be able to happen
+      - !Ref SubnetId
+
+  VpcId:
+    Description: VPC Id in-use
+    Value: !If [CreateVpc, !GetAtt VPC.Outputs.VpcId, !Ref VpcId]
+
+  VpcRouteTablePublic:
+    Condition: CreateVpc
+    Value: !GetAtt VPC.Outputs.RouteTablePublic
+
+# vim:expandtab:ft=cloudformation.yaml:sts=2:sw=2:ts=2
